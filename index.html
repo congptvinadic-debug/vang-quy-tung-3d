@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Biển Vàng Quý Tùng - xem trước 3D</title>
+<style>
+  :root { --bg:#10151c; --panel:#171e28; --line:#2a3442; --gold:#e4bd5a; --text:#e9edf2; --mut:#8e9bab; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--text); font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+  #c { position:fixed; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  .panel { position:fixed; left:16px; top:16px; width:min(320px,calc(100vw - 32px)); background:rgba(23,30,40,.92); border:1px solid var(--line); border-radius:12px; padding:14px; backdrop-filter:blur(6px); }
+  h1 { font-size:16px; margin:0 0 2px; color:var(--gold); letter-spacing:.3px; }
+  .sub { font-size:12px; color:var(--mut); margin-bottom:12px; }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:1px; color:var(--mut); margin:10px 0 6px; }
+  .row { display:flex; flex-wrap:wrap; gap:6px; }
+  button { background:#202a37; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:7px 10px; font:inherit; font-size:13px; cursor:pointer; min-height:36px; }
+  button:hover { border-color:var(--gold); }
+  button.on { background:var(--gold); color:#1a1405; border-color:var(--gold); font-weight:600; }
+  .opt { display:flex; align-items:center; gap:10px; width:100%; text-align:left; }
+  .sw { width:22px; height:22px; border-radius:5px; border:1px solid #0006; flex:none; }
+  label.tg { display:flex; align-items:center; gap:8px; font-size:13px; margin:6px 0; cursor:pointer; }
+  input[type=range] { width:100%; accent-color:var(--gold); }
+  .dim { font-size:12px; color:var(--mut); margin-top:6px; }
+  #msg { position:fixed; inset:0; display:none; align-items:center; justify-content:center; text-align:center; padding:24px; background:var(--bg); }
+  #hint { position:fixed; right:16px; bottom:12px; font-size:12px; color:#fff9; text-shadow:0 1px 3px #000; }
+  @media (max-width:640px){ .panel{ top:auto; bottom:12px; max-height:46vh; overflow:auto; } #hint{ display:none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="panel">
+  <h1>Biển Vàng Quý Tùng</h1>
+  <div class="sub">Xem trước biển chữ nổi trên mặt tiền. Kéo chuột để xoay, lăn để phóng to.</div>
+  <div class="lbl">Phương án biển</div>
+  <div id="opts"></div>
+  <div class="lbl">Góc nhìn</div>
+  <div class="row" id="views"></div>
+  <div class="lbl">Tùy chỉnh</div>
+  <label class="tg"><input type="checkbox" id="night"> Ban đêm (biển phát sáng)</label>
+  <label class="tg"><input type="checkbox" id="mark"> Hiện khung đỏ vị trí khách đánh dấu</label>
+  <div class="lbl">Chiều cao biển: <span id="hv">2.0</span> m (rộng 3.3 m)</div>
+  <input type="range" id="hs" min="1.0" max="2.6" step="0.1" value="2.0">
+  <div class="dim">Mô hình dựng sơ bộ theo ảnh hiện trạng, kích thước gần đúng.</div>
+</div>
+<div id="hint">Kéo: xoay · Lăn: zoom · Chuột phải: dịch</div>
+<div id="msg"><div><h2>Không khởi tạo được đồ họa 3D</h2><p>Trình duyệt cần hỗ trợ WebGPU hoặc WebGL2. Thử Chrome hoặc Edge bản mới.</p></div></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.webgpu.js",
+  "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.webgpu.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const OPTIONS = [
+  { n: 'Đỏ - Vàng cổ điển', logo: 'Đồng tiền', c: '#9b0f14' },
+  { n: 'Đen - Vàng sang trọng', logo: 'Kim cương', c: '#111111' },
+  { n: 'Navy - Vàng', logo: 'Hoa sen', c: '#123a6b' },
+  { n: 'Xanh ngọc - Vàng', logo: 'Thỏi vàng', c: '#0f5a43' },
+  { n: 'Kem - Đỏ (ban ngày)', logo: 'Cây tùng', c: '#f1e8d0' },
+];
+const SIGN_W = 3.3, SIGN_BOTTOM = 2.82;
+
+const canvas = document.getElementById('c');
+let renderer;
+try {
+  renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+  await renderer.init();
+} catch (e) {
+  console.error(e);
+  document.getElementById('msg').style.display = 'flex';
+  throw e;
+}
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color('#cfe0ee');
+scene.fog = new THREE.Fog('#cfe0ee', 30, 70);
+const camera = new THREE.PerspectiveCamera(42, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(4.5, 2.2, 11);
+const controls = new OrbitControls(camera, canvas);
+controls.target.set(0, 3.2, 0);
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 2.5;
+controls.maxDistance = 26;
+controls.minAzimuthAngle = -Math.PI * 0.42;
+controls.maxAzimuthAngle = Math.PI * 0.42;
+controls.enableDamping = true;
+
+// ---------- lights ----------
+const hemi = new THREE.HemisphereLight('#ffffff', '#8a8f96', 1.1);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight('#fff3dc', 2.4);
+sun.position.set(-8, 14, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -14, right: 14, top: 14, bottom: -14, near: 1, far: 50 });
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+const signLight = new THREE.PointLight('#ffd9a0', 0, 16, 1.6);
+signLight.position.set(0, 3.8, 2.4);
+scene.add(signLight);
+
+// ---------- helpers ----------
+const M = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.85, metalness: 0, ...o });
+const white = M('#f3f1ec', { roughness: 0.95 });
+const whiteTrim = M('#ebe8e1', { roughness: 0.9 });
+const black = M('#16181b', { roughness: 0.45, metalness: 0.55 });
+const glass = new THREE.MeshStandardMaterial({ color: '#8fb0c4', roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.28, depthWrite: false });
+const darkGlass = new THREE.MeshStandardMaterial({ color: '#1c2630', roughness: 0.08, metalness: 0.6 });
+function box(w, h, d, x, y, z, mat, shadow = true) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = shadow;
+  m.receiveShadow = true;
+  scene.add(m);
+  return m;
+}
+
+// ---------- ground (paving tiles) ----------
+{
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 512;
+  const g = cv.getContext('2d');
+  g.fillStyle = '#c9c6bf';
+  g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 4000; i++) {
+    const v = 185 + Math.random() * 30;
+    g.fillStyle = `rgb(${v},${v - 2},${v - 6})`;
+    g.fillRect(Math.random() * 512, Math.random() * 512, 3, 3);
+  }
+  g.strokeStyle = '#8f8c86';
+  g.lineWidth = 3;
+  g.strokeRect(0, 0, 512, 512);
+  g.beginPath(); g.moveTo(256, 0); g.lineTo(256, 512); g.moveTo(0, 256); g.lineTo(512, 256); g.stroke();
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(30, 20);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const p = new THREE.Mesh(new THREE.PlaneGeometry(60, 40), new THREE.MeshStandardMaterial({ map: t, roughness: 0.8 }));
+  p.rotation.x = -Math.PI / 2;
+  p.position.set(0, 0, 18);
+  p.receiveShadow = true;
+  scene.add(p);
+}
+
+// ---------- facade ----------
+const WALL_H = 12.5, OPEN_W = 3.3, OPEN_H = 5.3;
+box(5.7, WALL_H, 0.3, -(OPEN_W / 2 + 2.85), WALL_H / 2, -0.15, white);
+box(5.7, WALL_H, 0.3, (OPEN_W / 2 + 2.85), WALL_H / 2, -0.15, white);
+box(OPEN_W, WALL_H - OPEN_H, 0.3, 0, OPEN_H + (WALL_H - OPEN_H) / 2, -0.15, white);
+// architrave around the shop opening
+box(0.4, 5.6, 0.14, -1.85, 2.8, 0.07, whiteTrim);
+box(0.4, 5.6, 0.14, 1.85, 2.8, 0.07, whiteTrim);
+// corner pilasters + caps
+for (const s of [-1, 1]) {
+  box(1.0, 11.6, 0.34, s * 5.3, 5.8, 0.17, whiteTrim);
+  box(1.3, 0.35, 0.5, s * 5.3, 5.85, 0.25, whiteTrim);
+  box(1.3, 0.5, 0.5, s * 5.3, 0.25, 0.25, whiteTrim);
+  box(1.25, 0.4, 0.5, s * 5.3, 11.5, 0.25, whiteTrim);
+}
+// string course and cornice
+box(14, 0.22, 0.2, 0, 5.85, 0.1, whiteTrim);
+box(14.4, 0.5, 0.6, 0, 11.8, 0.3, whiteTrim);
+box(14.6, 0.25, 0.8, 0, 12.2, 0.4, whiteTrim);
+// upper window
+box(2.6, 3.6, 0.04, 0, 8.0, 0.0, darkGlass);
+for (const [x, w] of [[-1.3, 0.12], [1.3, 0.12], [0, 0.1], [-0.65, 0.05], [0.65, 0.05]]) box(w, 3.6, 0.07, x, 8.0, 0.03, black);
+for (const y of [6.2, 9.8, 7.9]) box(2.7, 0.12, 0.07, 0, y, 0.03, black);
+box(3.3, 0.22, 0.2, 0, 10.0, 0.1, whiteTrim);
+box(3.3, 0.18, 0.18, 0, 6.0, 0.09, whiteTrim);
+box(0.2, 3.9, 0.16, -1.55, 8.0, 0.08, whiteTrim);
+box(0.2, 3.9, 0.16, 1.55, 8.0, 0.08, whiteTrim);
+// plinth bands on upper wall for panel look
+for (const s of [-1, 1]) {
+  box(1.6, 3.2, 0.06, s * 3.1, 8.0, 0.03, whiteTrim);
+  box(1.6, 3.2, 0.06, s * 3.1, 2.8, 0.03, whiteTrim);
+}
+
+// ---------- shop front (door + glazing) ----------
+const GZ = -0.2;
+box(OPEN_W, OPEN_H, 0.04, 0, OPEN_H / 2, GZ, glass, false);
+const mull = (w, h, x, y, d = 0.07) => box(w, h, d, x, y, GZ + 0.01, black);
+mull(OPEN_W, 0.1, 0, 0.05);                 // sill
+mull(0.07, OPEN_H, -OPEN_W / 2 + 0.035, OPEN_H / 2);
+mull(0.07, OPEN_H, OPEN_W / 2 - 0.035, OPEN_H / 2);
+mull(OPEN_W, 0.1, 0, 2.7);                  // door head
+mull(OPEN_W, 0.07, 0, OPEN_H - 0.035);
+mull(OPEN_W, 0.06, 0, 4.4);
+mull(OPEN_W, 0.06, 0, 4.7);
+for (const x of [-0.82, 0.82]) mull(0.06, OPEN_H - 2.7, x, 2.7 + (OPEN_H - 2.7) / 2);
+for (const x of [-1.15, 1.15]) mull(0.05, 2.65, x, 1.35);
+mull(0.05, 2.65, 0, 1.35);
+// small iron band at 4.4-4.7
+{
+  const tor = new THREE.TorusGeometry(0.075, 0.012, 6, 14);
+  const im = new THREE.InstancedMesh(tor, black, 36);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 36; i++) { d.position.set(-1.55 + i * 0.0885, 4.55, GZ + 0.03); d.updateMatrix(); im.setMatrixAt(i, d.matrix); }
+  scene.add(im);
+}
+// handles
+for (const x of [-0.12, 0.12]) {
+  const h = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.9, 10), M('#c8ccd0', { metalness: 0.9, roughness: 0.25 }));
+  h.position.set(x, 1.2, GZ + 0.09);
+  scene.add(h);
+}
+// dark interior
+{
+  const room = new THREE.Mesh(new THREE.BoxGeometry(OPEN_W, OPEN_H, 5), new THREE.MeshStandardMaterial({ color: '#2a2c2e', roughness: 0.95, side: THREE.BackSide }));
+  room.position.set(0, OPEN_H / 2, GZ - 2.55);
+  room.receiveShadow = true;
+  scene.add(room);
+}
+// steps
+box(OPEN_W + 0.6, 0.08, 0.5, 0, 0.04, 0.25, M('#2b2e31', { roughness: 0.6 }));
+
+// ---------- canopy (steel frame + glass + scroll fascia) ----------
+{
+  const CX = 5.6, D = 2.9, Y0 = 5.62, DROP = 0.2;
+  const yAt = (z) => Y0 - (z / D) * DROP;
+  box(CX * 2, 0.14, 0.12, 0, Y0, 0.06, black);                         // wall beam
+  box(CX * 2, 0.16, 0.1, 0, yAt(D), D, black);                         // front beam
+  for (const s of [-1, 1]) box(0.1, 0.14, D, s * CX, Y0 - DROP / 2, D / 2, black);
+  for (let i = 0; i <= 8; i++) box(0.07, 0.12, D, -CX + (i * CX * 2) / 8, Y0 - DROP / 2 - 0.02, D / 2, black);
+  for (const z of [0.96, 1.93]) box(CX * 2, 0.08, 0.07, 0, yAt(z) - 0.02, z, black);
+  const cols = 8, rows = 3, pw = (CX * 2) / cols, pd = D / rows;
+  for (let i = 0; i < cols; i++) for (let j = 0; j < rows; j++) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(pw - 0.12, 0.025, pd - 0.1), glass);
+    m.position.set(-CX + pw * (i + 0.5), yAt(pd * (j + 0.5)) + 0.01, pd * (j + 0.5));
+    m.rotation.x = Math.atan2(DROP, D);
+    scene.add(m);
+  }
+  // glass upstand at wall
+  const up = new THREE.Mesh(new THREE.BoxGeometry(CX * 2, 0.55, 0.025), glass);
+  up.position.set(0, Y0 + 0.33, 0.05);
+  scene.add(up);
+  for (let i = 0; i <= 8; i++) box(0.05, 0.6, 0.05, -CX + (i * CX * 2) / 8, Y0 + 0.33, 0.05, black);
+  // scroll fascia
+  const tor = new THREE.TorusGeometry(0.1, 0.014, 6, 16);
+  const n = 56, im = new THREE.InstancedMesh(tor, black, n * 2);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < n; i++) {
+    d.position.set(-CX + 0.1 + (i * (CX * 2 - 0.2)) / (n - 1), yAt(D) - 0.2, D + 0.02); d.updateMatrix(); im.setMatrixAt(i, d.matrix);
+    d.position.y -= 0.0; d.scale.setScalar(0.6); d.position.set(-CX + 0.1 + (i * (CX * 2 - 0.2)) / (n - 1) + 0.05, yAt(D) - 0.2, D + 0.02); d.updateMatrix(); im.setMatrixAt(n + i, d.matrix); d.scale.setScalar(1);
+  }
+  scene.add(im);
+  box(CX * 2, 0.04, 0.05, 0, yAt(D) - 0.32, D + 0.02, black);
+  // hanger brackets
+  for (const x of [-1.7, 1.7]) box(0.16, 0.16, 0.2, x, Y0 - 0.14, 0.1, black);
+}
+
+// ---------- planters + bushes ----------
+{
+  const rnd = (() => { let s = 7; return () => (s = (s * 16807) % 2147483647) / 2147483647; })();
+  for (const x of [-3.5, 3.5]) {
+    box(1.9, 0.5, 0.5, x, 0.25, 0.55, M('#2a2f33', { roughness: 0.5 }));
+    const g = new THREE.IcosahedronGeometry(0.28, 1);
+    const im = new THREE.InstancedMesh(g, M('#4d8a3a', { roughness: 0.9 }), 22);
+    im.castShadow = true;
+    const d = new THREE.Object3D();
+    for (let i = 0; i < 22; i++) {
+      d.position.set(x + (rnd() - 0.5) * 1.6, 0.62 + rnd() * 0.3, 0.55 + (rnd() - 0.5) * 0.25);
+      d.scale.setScalar(0.7 + rnd() * 0.7);
+      d.updateMatrix();
+      im.setMatrixAt(i, d.matrix);
+      im.setColorAt(i, new THREE.Color().setHSL(0.27 + rnd() * 0.05, 0.45, 0.28 + rnd() * 0.12));
+    }
+    scene.add(im);
+  }
+}
+
+// ---------- sign ----------
+const loader = new THREE.TextureLoader();
+const texCache = {};
+function tex(path, srgb) {
+  if (!texCache[path]) {
+    const t = loader.load(path);
+    t.anisotropy = 8;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    texCache[path] = t;
+  }
+  return texCache[path];
+}
+const signMat = new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.15, bumpScale: 10 });
+const sideMat = M('#1b1d20', { metalness: 0.6, roughness: 0.4 });
+const signMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), [sideMat, sideMat, sideMat, sideMat, signMat, sideMat]);
+signMesh.castShadow = true;
+signMesh.receiveShadow = true;
+scene.add(signMesh);
+const mark = new THREE.Group();
+{
+  const mm = new THREE.MeshBasicMaterial({ color: '#e5332a' });
+  const W = SIGN_W, H = 1.2, t = 0.05, y = 2.82 + H / 2;
+  for (const [w, h, x, yy] of [[W, t, 0, y - H / 2], [W, t, 0, y + H / 2], [t, H, -W / 2, y], [t, H, W / 2, y]]) {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.02), mm);
+    m.position.set(x, yy, 0.3);
+    mark.add(m);
+  }
+  mark.visible = false;
+  scene.add(mark);
+}
+let cur = 0, signH = 2.0, night = false;
+function applySign() {
+  signMat.map = tex(`tex/sign${cur + 1}.jpg`, true);
+  signMat.bumpMap = tex(`tex/h${cur + 1}.png`, false);
+  signMat.emissiveMap = signMat.map;
+  signMat.emissive = new THREE.Color('#ffffff');
+  signMat.emissiveIntensity = night ? 1.1 : 0;
+  signMat.needsUpdate = true;
+  signMesh.scale.set(SIGN_W, signH, 0.07);
+  signMesh.position.set(0, SIGN_BOTTOM + signH / 2, 0.06);
+  document.getElementById('hv').textContent = signH.toFixed(1);
+  document.querySelectorAll('#opts button').forEach((b, i) => b.classList.toggle('on', i === cur));
+}
+function applyNight() {
+  scene.background.set(night ? '#070b14' : '#cfe0ee');
+  scene.fog.color.set(night ? '#070b14' : '#cfe0ee');
+  hemi.intensity = night ? 0.25 : 1.1;
+  sun.intensity = night ? 0.12 : 2.4;
+  sun.color.set(night ? '#8fa8ff' : '#fff3dc');
+  signLight.intensity = night ? 40 : 0;
+  applySign();
+}
+
+// ---------- UI ----------
+const optsEl = document.getElementById('opts');
+OPTIONS.forEach((o, i) => {
+  const b = document.createElement('button');
+  b.className = 'opt';
+  b.innerHTML = `<span class="sw" style="background:${o.c}"></span><span>PA${i + 1}. ${o.n}<br><small style="color:#8e9bab">Logo ${o.logo}</small></span>`;
+  b.onclick = () => { cur = i; applySign(); };
+  optsEl.appendChild(b);
+  optsEl.appendChild(document.createElement('div')).style.height = '5px';
+});
+const VIEWS = {
+  'Chính diện': [[0, 2.4, 12], [0, 3.4, 0]],
+  'Từ trái': [[-7, 2.0, 8.5], [0, 3.4, 0]],
+  'Từ phải': [[7, 2.0, 8.5], [0, 3.4, 0]],
+  'Gần biển': [[1.6, 2.6, 5.6], [0, 3.7, 0]],
+  'Nhìn từ đường': [[3.0, 1.65, 14], [0, 3.6, 0]],
+};
+const vEl = document.getElementById('views');
+function goView(k, jump) {
+  const [p, t] = VIEWS[k];
+  const f = Math.max(1, 1.5 / camera.aspect);
+  const T = new THREE.Vector3(...t), P = new THREE.Vector3(...p).sub(T).multiplyScalar(f).add(T);
+  if (jump) { camera.position.copy(P); controls.target.copy(T); return; }
+  tween = { t0: performance.now(), p0: camera.position.clone(), t0v: controls.target.clone(), p1: P, t1: T };
+}
+let tween = null;
+for (const k in VIEWS) {
+  const b = document.createElement('button');
+  b.textContent = k;
+  b.onclick = () => {
+    goView(k, false);
+  };
+  vEl.appendChild(b);
+}
+document.getElementById('night').onchange = (e) => { night = e.target.checked; applyNight(); };
+document.getElementById('mark').onchange = (e) => { mark.visible = e.target.checked; };
+document.getElementById('hs').oninput = (e) => { signH = parseFloat(e.target.value); applySign(); };
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+applyNight();
+goView('Chính diện', true);
+renderer.setAnimationLoop((now) => {
+  if (tween) {
+    const k = Math.min(1, (now - tween.t0) / 900), e = k * k * (3 - 2 * k);
+    camera.position.lerpVectors(tween.p0, tween.p1, e);
+    controls.target.lerpVectors(tween.t0v, tween.t1, e);
+    if (k >= 1) tween = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+window.__ready = true;
+console.log('backend:', renderer.backend && renderer.backend.constructor.name);
+</script>
+</body>
+</html>
